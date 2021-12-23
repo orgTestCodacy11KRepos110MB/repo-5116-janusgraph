@@ -14,17 +14,21 @@
 
 package org.janusgraph.graphdb.tinkerpop;
 
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.janusgraph.core.attribute.Geoshape;
 import org.janusgraph.core.attribute.Text;
 import org.janusgraph.graphdb.relations.RelationIdentifier;
 import org.janusgraph.graphdb.server.JanusGraphServer;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -34,9 +38,11 @@ public abstract class JanusGraphSerializerBaseIT {
 
     protected abstract GraphTraversalSource traversal();
 
-    @BeforeEach
-    public void setUp() {
-        this.server = new JanusGraphServer("src/test/resources/janusgraph-server-with-serializers.yaml");
+    public void setUp(boolean useCustomId) {
+        final String conf = useCustomId
+            ? "src/test/resources/janusgraph-server-custom-id.yaml"
+            : "src/test/resources/janusgraph-server-with-serializers.yaml";
+        this.server = new JanusGraphServer(conf);
         server.start().join();
     }
 
@@ -45,21 +51,34 @@ public abstract class JanusGraphSerializerBaseIT {
         server.stop().join();
     }
 
-    @Test
-    public void testGeoshapePointsWriteAndRead(TestInfo testInfo) {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testGeoshapePointsWriteAndRead(boolean useCustomId, TestInfo testInfo) {
+        setUp(useCustomId);
         GraphTraversalSource g = traversal();
-        g.addV(testInfo.getDisplayName()).property("geoshape", Geoshape.point(37.97, 23.72)).iterate();
+        GraphTraversal<Vertex, Vertex> t = g.addV(testInfo.getDisplayName());
+        if (useCustomId) {
+            t.property(T.id, "customId");
+        }
+        t.property("geoshape", Geoshape.point(37.97, 23.72)).iterate();
 
         Geoshape test = (Geoshape) g.V().hasLabel(testInfo.getDisplayName()).values("geoshape").next();
         assertEquals(37.97, test.getPoint().getLatitude());
         assertEquals(23.72, test.getPoint().getLongitude());
     }
 
-    @Test
-    public void testVertexSerialization(TestInfo testInfo) {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testVertexSerialization(boolean useCustomId, TestInfo testInfo) {
+        setUp(useCustomId);
         GraphTraversalSource g = traversal();
 
-        g.addV(testInfo.getDisplayName()).property("string", "test").iterate();
+        GraphTraversal<Vertex, Vertex> t = g.addV(testInfo.getDisplayName());
+        if (useCustomId) {
+            t.property(T.id, 100000);
+        }
+
+        t.property("string", "test").iterate();
 
         Vertex vertex = g.V().hasLabel(testInfo.getDisplayName()).next();
 
@@ -69,6 +88,7 @@ public abstract class JanusGraphSerializerBaseIT {
 
     @Test
     public void testEdgeSerialization(TestInfo testInfo) {
+        setUp(false);
         GraphTraversalSource g = traversal();
         RelationIdentifier inputId = (RelationIdentifier) g
             .addV(testInfo.getDisplayName()).as("from")
@@ -77,31 +97,75 @@ public abstract class JanusGraphSerializerBaseIT {
             .id()
             .next();
 
-        Edge edge = g.E(inputId).next();
-
-        RelationIdentifier outputId = (RelationIdentifier) edge.id();
-        assertEquals(inputId, outputId);
+        assertEquals(inputId, g.E(inputId).next().id());
+        assertEquals(inputId, g.E(inputId).id().next());
     }
 
     @Test
-    public void testRelationIdentifier(TestInfo testInfo) {
+    public void testEdgeSerializationWithCustomId(TestInfo testInfo) {
+        setUp(true);
         GraphTraversalSource g = traversal();
-        RelationIdentifier inputId = (RelationIdentifier) g
+
+        // both vertices have long ids
+        RelationIdentifier id1 = (RelationIdentifier) g
             .addV(testInfo.getDisplayName()).as("from")
+            .property(T.id, 10000)
             .addV(testInfo.getDisplayName())
+            .property(T.id, 20000)
             .addE(testInfo.getDisplayName()).from("from")
             .id()
             .next();
+        assertEquals(id1, g.E(id1).next().id());
+        assertEquals(id1, g.E(id1).id().next());
 
-        RelationIdentifier outputId = (RelationIdentifier) g.E(inputId).id().next();
+        // both vertices have string ids
+        RelationIdentifier id2 = (RelationIdentifier) g
+            .addV(testInfo.getDisplayName()).as("from")
+            .property(T.id, "jg_id:001")
+            .addV(testInfo.getDisplayName())
+            .property(T.id, "jg_id:002")
+            .addE(testInfo.getDisplayName()).from("from")
+            .id()
+            .next();
+        assertEquals(id2, g.E(id2).next().id());
+        assertEquals(id2, g.E(id2).id().next());
 
-        assertEquals(inputId, outputId);
+        // one vertex has long id and another has string id
+        RelationIdentifier id3 = (RelationIdentifier) g
+            .addV(testInfo.getDisplayName()).as("from")
+            .property(T.id, "30000")
+            .addV(testInfo.getDisplayName())
+            .property(T.id, 30000)
+            .addE(testInfo.getDisplayName()).from("from")
+            .id()
+            .next();
+        assertEquals(id3, g.E(id3).next().id());
+        assertEquals(id3, g.E(id3).id().next());
+
+        RelationIdentifier id4 = (RelationIdentifier) g
+            .addV(testInfo.getDisplayName()).as("from")
+            .property(T.id, 40000)
+            .addV(testInfo.getDisplayName())
+            .property(T.id, "40000")
+            .addE(testInfo.getDisplayName()).from("from")
+            .id()
+            .next();
+        assertEquals(id4, g.E(id4).next().id());
+        assertEquals(id4, g.E(id4).id().next());
     }
 
-    @Test
-    public void testJanusGraphTextPredicates() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testJanusGraphTextPredicates(boolean useCustomId) {
+        setUp(useCustomId);
         GraphTraversalSource g = traversal();
-        g.addV("predicateTestLabel").property("name", "neptune").iterate();
+
+        GraphTraversal<Vertex, Vertex> t = g.addV("predicateTestLabel");
+        if (useCustomId) {
+            t.property(T.id, UUID.randomUUID().toString().replace("-", "@"));
+        }
+
+        t.property("name", "neptune").iterate();
 
         Vertex next = g.V().has("predicateTestLabel","name", Text.textPrefix("nep")).next();
 
